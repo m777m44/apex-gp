@@ -1,0 +1,23 @@
+import { chromium } from 'playwright-core';
+import { writeFileSync, existsSync } from 'node:fs';
+const HOME=process.env.HOME;
+const EXE=[`${HOME}/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,`${HOME}/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`].find(p=>existsSync(p));
+const br=await chromium.launch({executablePath:EXE,headless:true,args:['--use-angle=metal']});
+const p=await br.newPage({viewport:{width:600,height:600}});
+p.on('pageerror',e=>console.error(e.message));
+await p.goto('http://localhost:5502',{waitUntil:'load',timeout:120000});
+await p.waitForFunction(()=>window.__APEX__&&window.__APEX__.ready===true,null,{timeout:120000});
+const r=await p.evaluate(async()=>{
+  const mod=await import('/src/core/assets.js');
+  const A=mod.assets||mod.default;
+  const keys=[...A.items.keys()].filter(k=>/detail/i.test(k));
+  if(!keys.length) return {keys:[...A.items.keys()].slice(0,80), png:null};
+  const tex=A.items.get(keys[0]);
+  const img=tex.image;
+  const c=document.createElement('canvas'); c.width=1024;c.height=1024;
+  const g=c.getContext('2d'); g.drawImage(img,0,0,1024,1024);
+  return {keys, png:c.toDataURL('image/png').split(',')[1]};
+});
+console.log(r.keys);
+if(r.png)writeFileSync('/tmp/detail.png',Buffer.from(r.png,'base64'));
+await br.close();

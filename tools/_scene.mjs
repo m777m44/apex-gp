@@ -1,0 +1,21 @@
+import { chromium } from 'playwright-core';
+import { existsSync } from 'node:fs';
+const HOME=process.env.HOME;
+const EXE=[`${HOME}/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,`${HOME}/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find(p=>existsSync(p));
+const b=await chromium.launch({executablePath:EXE,headless:true,args:['--use-angle=metal','--ignore-gpu-blocklist','--mute-audio']});
+const p=await b.newPage({viewport:{width:800,height:600}});
+await p.goto('http://localhost:5310',{waitUntil:'load',timeout:120000});
+await p.waitForFunction(()=>window.__APEX__?.ready===true,null,{timeout:120000});
+console.log(await p.evaluate(()=>{
+  const e=window.__APEX__.engine; const out=[];
+  const walk=(o,d)=>{ if(d>3) return;
+    const tri=o.geometry?.index? o.geometry.index.count/3 : (o.geometry?.attributes?.position? o.geometry.attributes.position.count/3:0);
+    out.push('  '.repeat(d)+(o.name||o.type)+(o.isInstancedMesh?` [inst ${o.count}]`:'')+(tri?` tri=${Math.round(tri)}`:'')+(o.material? ` mat=${o.material.name||o.material.type}`:''));
+    for(const c of o.children) walk(c,d+1);
+  };
+  walk(e.circuit.group,0);
+  out.push('--- ENV ---');
+  for(const c of e.environment.group.children) out.push(' '+(c.name||c.type)+' children='+c.children.length);
+  return out.join('\n');
+}));
+await b.close();

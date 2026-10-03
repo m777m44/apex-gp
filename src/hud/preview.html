@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>APEX GP — HUD preview</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#05070c}
+  #stage{position:fixed;inset:0;background:#0b1018 center/cover no-repeat}
+</style>
+</head>
+<body>
+<!--
+  Dev-only harness for src/hud/hud.js. Not part of the game bundle (index.html is
+  the only entry). It drives the HUD with synthetic telemetry and race state so
+  transient graphics — shift lights at the limiter, DRS, sector and fastest-lap
+  cards, position changes — can be authored and captured without waiting for a
+  real race to produce them.
+
+  http://localhost:5210/src/hud/preview.html?t=8.5   (t = seconds into the script)
+-->
+<div id="stage"></div>
+<script type="module">
+import { HUD, formatLapTime } from './hud.js';
+
+const q = new URLSearchParams(location.search);
+const stage = document.getElementById('stage');
+stage.style.backgroundImage = `url(${q.get('bg') ?? '/shots/hud-base.png'})`;
+
+// ── a synthetic circuit with the same shape of API the HUD consumes ──────────
+const N = 900;
+const samples = [];
+for (let i = 0; i < N; i++) {
+  const u = (i / N) * Math.PI * 2;
+  const r = 620 + 210 * Math.sin(u * 3 + 0.7) + 90 * Math.sin(u * 5);
+  const x = Math.cos(u) * r, z = Math.sin(u) * r * 0.72;
+  samples.push({ s: i * 4, position: { x, y: 0, z }, right: { x: Math.cos(u + 1.57), y: 0, z: Math.sin(u + 1.57) } });
+}
+const circuit = {
+  samples,
+  length: N * 4,
+  step: 4,
+  sectorStarts: [0, (N * 4) / 3, ((N * 4) * 2) / 3],
+  drsZones: [{ startS: 120, endS: 620 }, { startS: 2200, endS: 2600 }],
+  sampleIndex: (s) => Math.floor((((s % (N * 4)) + N * 4) % (N * 4)) / 4) % N,
+  sampleAt(s) { return this.samples[this.sampleIndex(s)]; },
+};
+
+const hud = new HUD(stage, { circuit });
+hud.resize(innerWidth, innerHeight, Math.min(devicePixelRatio || 1, 2));
+addEventListener('resize', () => hud.resize(innerWidth, innerHeight, Math.min(devicePixelRatio || 1, 2)));
+
+const CODES = ['VER', 'HAL', 'OKO', 'REN', 'VOS', 'PLN', 'NOR', 'PIA', 'ALO', 'STR',
+  'GAS', 'TSU', 'ALB', 'SAR', 'BOT', 'ZHA', 'MAG', 'HUL', 'RIC', 'DEV'];
+const COLS = ['#0b2a6b', '#00b3a4', '#00b3a4', '#d81021', '#d81021', '#0b2a6b', '#f45c0a', '#f45c0a',
+  '#00594f', '#00594f', '#1f4fd8', '#1f4fd8', '#d6dbe2', '#d6dbe2', '#8a1b6b', '#8a1b6b',
+  '#2b2f36', '#2b2f36', '#6ec6f5', '#6ec6f5'];
+const COMPS = ['soft', 'medium', 'hard'];
+
+let t = parseFloat(q.get('t') ?? '0');
+const step = 1 / 60;
+let lap = 7;
+let sectorStatus = ['purple', 'green', ''];
+let sectorTimes = [28.442, 31.007, NaN];
+let order = CODES.map((_, i) => i);
+
+function frame() {
+  t += step;
+  // Scripted moments: a limiter run, DRS, a sector completion, a fastest lap.
+  const cycle = t % 24;
+  const rpmNorm = 0.55 + 0.45 * Math.abs(Math.sin(t * 0.55));
+  const speed = 120 + 190 * (0.5 + 0.5 * Math.sin(t * 0.55 - 1.2));
+  const throttle = cycle > 6 && cycle < 9 ? 0.1 : 0.5 + 0.5 * Math.sin(t * 0.9);
+  const brake = cycle > 6 && cycle < 9 ? 0.85 : 0;
+
+  if (Math.abs(cycle - 5) < step / 2) { sectorStatus = ['purple', 'green', 'yellow']; sectorTimes = [28.442, 31.007, 29.884]; }
+  if (Math.abs(cycle - 12) < step / 2) { lap++; sectorStatus = ['', '', '']; sectorTimes = [NaN, NaN, NaN]; }
+  if (Math.abs(cycle - 16) < step / 2) {
+    const a = 3 + (Math.floor(t / 24) % 5);
+    [order[a], order[a - 1]] = [order[a - 1], order[a]];
+  }
+
+  const standings = order.map((driver, i) => ({
+    index: driver,
+    position: i + 1,
+    code: CODES[driver],
+    colour: COLS[driver],
+    gap: i * 1.4 + Math.sin(driver) * 0.4 + 1.2,
+    interval: i === 0 ? 0 : 0.4 + Math.abs(Math.sin(driver * 2.3)) * 2.1,
+    compound: COMPS[driver % 3],
+    drs: i > 0 && i % 4 === 1,
+    number: [1,44,63,16,55,11,4,81,14,18,10,22,23,2,77,24,20,27,3,21][driver],
+    pit: driver === 11,
+    gapText: i === 0 ? 'LEADER' : `+${(i * 1.4).toFixed(3)}`,
+  }));
+
+  hud.render({
+    dt: step,
+    telemetry: {
+      speedKph: speed, rpmNorm, gear: Math.max(1, Math.min(8, Math.round(speed / 42) + 1)),
+      throttle, brake, drs: cycle > 14 && cycle < 20, drsAvailable: cycle > 12,
+      ers: 0.25 + 0.5 * (0.5 + 0.5 * Math.sin(t * 0.3)),
+      tyreTemp: [102, 96, 88, 91], brakeTemp: [520, 480, 380, 360],
+      tyreWear: [0.34, 0.41, 0.22, 0.25], compound: 'medium', tyreAge: 12,
+      slipRatio: [0.02, 0.03, 0.05, 0.05], slipAngle: [0.03, 0.03, 0.02, 0.02],
+      trackS: (t * 60) % circuit.length,
+    },
+    race: {
+      phase: 'green', lap, totalLaps: 24,
+      currentLapText: formatLapTime(cycle * 6 + 4),
+      lastLapText: formatLapTime(89.334), bestLapText: formatLapTime(88.442),
+      bestOverall: 88.442, sectorStatus, sectorTimes,
+      delta: -0.284 + Math.sin(t * 0.4) * 0.4, deltaText: null,
+      drsEnabled: true, standings, playerCode: 'REN',
+      fastestLap: { code: 'REN', time: 88.442 },
+    },
+    cars: order.map((driver, i) => ({
+      index: driver,
+      s: (t * 62 + i * 140) % circuit.length,
+      lateral: Math.sin(i * 2.2) * 3,
+      colour: COLS[driver],
+    })),
+    playerIndex: 3,
+    flag: 'green',
+    weather: { label: 'DRY 31°C' },
+  });
+  requestAnimationFrame(frame);
+}
+frame();
+window.__HUD_READY__ = true;
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+import { chromium } from 'playwright-core';
+import { existsSync } from 'node:fs';
+const HOME=process.env.HOME;
+const EXE=[`${HOME}/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,`${HOME}/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find(p=>existsSync(p));
+const b=await chromium.launch({executablePath:EXE,headless:true,args:['--use-angle=metal','--ignore-gpu-blocklist','--mute-audio']});
+const p=await b.newPage({viewport:{width:800,height:600}});
+await p.goto('http://localhost:5310',{waitUntil:'load',timeout:120000});
+await p.waitForFunction(()=>window.__APEX__?.ready===true,null,{timeout:120000});
+console.log(await p.evaluate(()=>{
+  const e=window.__APEX__.engine; const car=e.field.cars[0];
+  const M=car.model.materials; const rev=new Map();
+  for(const [k,v] of Object.entries(M)) if(v&&v.isMaterial) rev.set(v,k);
+  const out=[];
+  car.model.group.traverse(o=>{ if(!(o.isMesh||o.isInstancedMesh)) return;
+    const n=rev.get(o.material)||o.material?.name||o.material?.type;
+    const c=o.material?.color? '#'+o.material.color.getHexString():'';
+    out.push(`${o.name||o.type} -> ${n} ${c} rough=${o.material?.roughness} metal=${o.material?.metalness} env=${o.material?.envMapIntensity} cast=${o.castShadow}`);});
+  return out.join('\n');
+}));
+await b.close();

@@ -1,0 +1,21 @@
+import { chromium } from 'playwright-core';
+const exe = `${process.env.HOME}/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`;
+const b = await chromium.launch({ executablePath: exe, headless: true, args: ['--use-angle=metal','--ignore-gpu-blocklist'] });
+const p = await b.newPage({ viewport: { width: 1920, height: 1080 } });
+await p.goto('http://localhost:5509/?ui=0', { waitUntil: 'load' });
+await p.waitForFunction(() => window.__APEX__?.ready === true, null, { timeout: 120000 });
+const r = await p.evaluate(async () => {
+  const A = window.__APEX__; A.pause(); await A.capture('hud', 0);
+  const fx = A.engine.particles;
+  const run = async (n) => { const t=performance.now(); for(let i=0;i<n;i++) await A.renderFrame(i); return (performance.now()-t)/n; };
+  await run(120);
+  const on = await run(200);
+  const d0 = A.stats().drawCalls;
+  fx.enabled = false; for (const pool of fx.pools) pool.points.visible = false;
+  await run(60);
+  const off = await run(200);
+  const d1 = A.stats().drawCalls;
+  return { onMs:+on.toFixed(2), offMs:+off.toFixed(2), deltaMs:+(on-off).toFixed(2), drawOn:d0, drawOff:d1 };
+});
+console.log(JSON.stringify(r));
+await b.close();

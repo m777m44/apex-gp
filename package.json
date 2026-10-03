@@ -1,0 +1,22 @@
+{
+  "name": "apex-gp",
+  "version": "1.0.0",
+  "description": "APEX GP — a fully procedural Formula 1 racing game in three.js. No asset files, no network fetches.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "shot": "node tools/shot.mjs",
+    "probe": "node tools/probe.mjs",
+    "compare": "node tools/compare.mjs"
+  },
+  "keywords": ["three.js", "webgl", "racing", "formula-1", "procedural"],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "playwright-core": "^1.61.1",
+    "three": "^0.185.1",
+    "vite": "^8.1.5"
+  }
+}

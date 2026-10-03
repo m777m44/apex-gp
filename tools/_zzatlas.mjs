@@ -1,0 +1,23 @@
+import { chromium } from 'playwright-core';
+import { writeFileSync, existsSync } from 'node:fs';
+const HOME=process.env.HOME;
+const EXE=[`${HOME}/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find(p=>existsSync(p));
+const br=await chromium.launch({executablePath:EXE,headless:true,args:['--use-angle=metal']});
+const p=await br.newPage({viewport:{width:400,height:300}});
+p.on('pageerror',e=>console.log('[e]',e.message));
+await p.goto('http://localhost:5407',{waitUntil:'load',timeout:180000});
+await p.waitForFunction(()=>window.__APEX__&&window.__APEX__.ready===true,null,{timeout:180000});
+const d=await p.evaluate(async ()=>{
+  const gb=window.__APEX__.engine.scene.getObjectByName('GridBoxes');
+  const img=gb.material.map.image;
+  const c=document.createElement('canvas'); c.width=img.width; c.height=img.height;
+  const g=c.getContext('2d');
+  g.fillStyle='#204060'; g.fillRect(0,0,c.width,c.height);
+  g.drawImage(img,0,0);
+  const dd=g.getImageData(0,0,c.width,c.height).data;
+  let nz=0; for(let i=0;i<dd.length;i+=4) if(dd[i]>120) nz++;
+  return {url:c.toDataURL('image/png').split(',')[1], nz, w:img.width, h:img.height, uv:Array.from(gb.geometry.attributes.uv.array.slice(0,10))};
+});
+writeFileSync('/tmp/gridatlas.png', Buffer.from(d.url,'base64'));
+console.log(d.nz, d.w, d.h, d.uv);
+await br.close();
