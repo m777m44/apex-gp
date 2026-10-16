@@ -282,7 +282,7 @@ Ribbon builders in `circuit.js` / `environment.js` follow the same rule —
 ```js
 const input = new Input(window, { steerRate, pedalRate, deadzone });
 input.update(dt) -> state   // { steer -1..1, throttle 0..1, brake, clutch, drs, ers, lookBack, gamepad }
-input.actions               // edge-triggered: shiftUp, shiftDown, camera, reset, pause
+input.actions               // edge-triggered: shiftUp, shiftDown, camera, reset, pause, replay (J)
 input.on(name, cb) / input.endFrame() / input.isDown(action)
 input.setVirtual(partial|null)   // force the state (capture, replay, AI-driven player)
 ```
@@ -502,14 +502,19 @@ TYRE_RADIUS, TYRE_HALF_WIDTH_FRONT, TYRE_HALF_WIDTH_REAR, RIM_RADIUS
 ### `physics/vehicle.js`
 ```js
 const v = new Vehicle({ circuit, config, id });
-v.reset({ s, lateral, speed })
+v.reset({ s, lateral, speed })   // also clears all bodywork damage
 v.setControls({ steer, throttle, brake, drs, ers, shiftUp, shiftDown, autoGearbox })
 v.step(dt)                    // FIXED dt only
+v.applyContactDamage(severity 0..1, zone)  // 'front'|'rear'|'left'|'right'; books aero loss + steering pull
+v.repairDamage(amount 0..1)   // fraction of EACH zone restored (pit stops pass 0.85)
+v.damageTotal()               // 0..1 overall
 v.pose = { position, quaternion }
 v.telemetry = { speed, speedKph, rpm, rpmNorm, gear, throttle, brake, drs, ers,
                 gLat, gLong, wheelSpin[], suspension[], slipRatio[], slipAngle[],
                 tyreTemp[], tyreLoad[], brakeTemp[], lockup[], onTrack,
-                trackS, trackLateral }
+                trackS, trackLateral,
+                damage{ front, rear, left, right }, damageTotal, lastImpact }
+v.corneringLimit(speed)       // peak lateral m/s^2 (used by the AI profile; damage-aware)
 v.corneringLimit(speed)       // peak lateral m/s^2 (used by the AI profile)
 v.surfaceProbe = (worldPos) => ({ grip, drag })   // injected by the game
 DEFAULT_CONFIG                // every tunable, documented inline
@@ -519,12 +524,15 @@ DEFAULT_CONFIG                // every tunable, documented inline
 ```js
 buildSpeedProfile(circuit, vehicle, { brakeG, accelG, safety, topSpeed }) -> Float32Array
 new AIDriver({ vehicle, circuit, profile, skill, seed, name }).update(dt, rivalVehicles)
-new OpponentField({ circuit, scene, entries, playerIndex, detail })
+new OpponentField({ circuit, scene, entries, playerIndex, detail, events })
+events.onContact({ severity, x, y, z, a, b })   // optional; hard car-to-car contacts for FX
 field.cars[i] = { entry, vehicle, model, ai, index }
 field.profile / field.player / field.update(dt) / field.syncModels() / field.dispose()
 ```
 `field.update(dt)` steps AI + physics + de-penetration. `field.syncModels()` is
 the only thing that touches the scene graph — call it once per RENDER frame.
+De-penetration books bodywork damage on both cars (severity from closing speed)
+and pit stops repair 85% of each damage zone when the tyres are changed.
 
 ### `camera/cameras.js`
 ```js
@@ -578,10 +586,12 @@ only.
 ```js
 const hud = new HUD(container, { circuit });
 hud.resize(w, h, dpr) / hud.setVisible(bool) / hud.dispose()
-hud.render({ telemetry, race, cars, playerIndex, banner, flag })
+hud.render({ telemetry, race, cars, playerIndex, banner, flag, replaying })
 formatLapTime(seconds) / formatGap(seconds)
 ```
 `cars` is `[{ index, s, lateral, colour }]` (see `RaceSession.carDots()`).
+`replaying` shows the REPLAY tag; `telemetry.damage*` drives the DMG readout
+in the cluster (hidden while the car is clean).
 
 ### `fx/particles.js`
 ```js

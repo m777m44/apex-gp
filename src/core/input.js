@@ -29,6 +29,7 @@ const KEYMAP = {
   reset: ['KeyX'],
   pause: ['KeyP'],
   look: ['KeyV'],
+  replay: ['KeyJ'],
 };
 
 export class Input {
@@ -50,7 +51,7 @@ export class Input {
     };
 
     /** Edge-triggered actions, cleared at the end of every update(). */
-    this.actions = { shiftUp: false, shiftDown: false, camera: false, reset: false, pause: false, drsToggle: false };
+    this.actions = { shiftUp: false, shiftDown: false, camera: false, reset: false, pause: false, drsToggle: false, replay: false };
     this._listeners = new Map();
     this._prevKeys = new Set();
     /**
@@ -185,6 +186,7 @@ export class Input {
     this.actions.camera = this._pressed('camera');
     this.actions.reset = this._pressed('reset');
     this.actions.pause = this._pressed('pause');
+    this.actions.replay = this._pressed('replay');
 
     for (const [name, on] of Object.entries(this.actions)) if (on) this._emit(name);
 

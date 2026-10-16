@@ -865,11 +865,16 @@ const _pb = new THREE.Vector3();
 export class OpponentField {
   /**
    * @param {{circuit:object, scene:THREE.Object3D, entries:Array,
-   *          playerIndex?:number, detail?:string, compounds?:boolean}} o
+   *          playerIndex?:number, detail?:string, compounds?:boolean,
+   *          events?:{onContact?:(e:{severity:number,x:number,y:number,z:number,a:number,b:number})=>void}}} o
+   * `events.onContact` fires (at most a few times per step) for hard contacts
+   * so the engine can answer with sparks, shake and sound. Optional — the
+   * physics response (impulse + damage) always happens.
    */
-  constructor({ circuit, scene, entries, playerIndex = 0, detail = 'low' }) {
+  constructor({ circuit, scene, entries, playerIndex = 0, detail = 'low', events = null }) {
     this.circuit = circuit;
     this.scene = scene;
+    this.events = events;
     this.cars = [];
     this.playerIndex = playerIndex;
     this.time = 0;
@@ -1021,6 +1026,9 @@ export class OpponentField {
         ai.fitTyres(pit.next);
         car.compound = pit.next;
         car.model.wheels.setCompound(pit.next);
+        // The crew change the nose while the car sits: bent wings come off,
+        // fresh ones go on. 0.85, not 1 — a rushed stop leaves scars.
+        veh.repairDamage(0.85);
         pit.phase = 'out';
         ai.mode = 'pitOut';
       }
@@ -1066,6 +1074,9 @@ export class OpponentField {
    */
   _separate() {
     const cars = this.cars;
+    // Hardest contacts this step, for the engine's FX sink. Capped so a
+    // multi-car pile-up cannot spam particles, shake and audio in one frame.
+    let hits = 0;
     for (let i = 0; i < cars.length; i++) {
       const A = cars[i].vehicle;
       if (cars[i].inPit) continue;
@@ -1111,6 +1122,32 @@ export class OpponentField {
               const UPSET = 0.16;
               A.yawRate -= hm.z * jimp * (nx * ca - nz * sa) * UPSET;
               B.yawRate += hk.z * jimp * (nx * cb - nz * sb) * UPSET;
+
+              // BODYWORK DAMAGE + FX EVENT. Severity is scaled off the closing
+              // speed: a wheel-bang (~1 m/s) barely marks the endplate, a
+              // 5 m/s shunt bends it, 10+ m/s takes the wing off. Zones come
+              // from which hull sphere pair touched; the left/right split
+              // reads the contact normal against the car's own right vector
+              // (right = (cos yaw, 0, -sin yaw)).
+              const sev = clamp((jimp - 0.4) / 6, 0, 1);
+              if (sev > 0) {
+                const zoneA = hm.z < -1 ? 'front' : hm.z > 1 ? 'rear'
+                  : ((nx * ca - nz * sa) > 0 ? 'left' : 'right');
+                const zoneB = hk.z < -1 ? 'front' : hk.z > 1 ? 'rear'
+                  : ((nx * cb - nz * sb) > 0 ? 'right' : 'left');
+                A.applyContactDamage(sev, zoneA);
+                B.applyContactDamage(sev, zoneB);
+                if (sev > 0.2 && this.events?.onContact && hits < 4) {
+                  hits++;
+                  this.events.onContact({
+                    severity: sev,
+                    x: (_pa.x + _pb.x) * 0.5,
+                    y: 0.5,
+                    z: (_pa.z + _pb.z) * 0.5,
+                    a: cars[i].index, b: cars[j].index,
+                  });
+                }
+              }
             }
             // Scrubbing tyres cost speed.
             A.u *= 0.994; B.u *= 0.994;
@@ -1133,7 +1170,10 @@ export class OpponentField {
       m.setWheelSpin(v.wheelSpin);
       m.setSuspension(v.suspension);
       m.setDRS(v.drsBlend);
-      const heat = clamp((Math.max(v.brakeTemp[0], v.brakeTemp[1], v.brakeTemp[2], v.brakeTemp[3]) - 430) / 600, 0, 1);
+      // Brake glow reads from ~380 C so hard braking is visibly hot long
+      // before the discs are at their ~1000 C limit; below that the discs
+      // stay dark iron, as on the real car.
+      const heat = clamp((Math.max(v.brakeTemp[0], v.brakeTemp[1], v.brakeTemp[2], v.brakeTemp[3]) - 380) / 560, 0, 1);
       m.materials.setBrakeHeat(heat);
     }
   }

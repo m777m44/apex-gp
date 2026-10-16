@@ -32,6 +32,8 @@
  *   vehicle.setControls({steer, throttle, brake, drs, ers, shiftUp, shiftDown, autoGearbox})
  *   vehicle.setAssists({ traction, abs, stability })
  *   vehicle.setSetup({ ... })              live suspension / aero / diff tuning
+ *   vehicle.applyContactDamage(severity, zone)   'front'|'rear'|'left'|'right'
+ *   vehicle.repairDamage(amount) / vehicle.damageTotal()
  *   vehicle.step(dt)
  *   vehicle.pose        { position, quaternion }
  *   vehicle.telemetry   see _updateTelemetry()
@@ -391,6 +393,15 @@ export class Vehicle {
     this.surfaceGrip = [1, 1, 1, 1];
     this.kerbContact = 0;
 
+    // ---- damage ------------------------------------------------------------
+    // 0 = pristine, 1 = destroyed, per zone. Accumulates from car-to-car
+    // contact (ai/opponents.js `_separate`) and barrier strikes (`_endStep`).
+    // Drains downforce / adds drag in `_aero`, is published on telemetry, is
+    // repaired by pit stops and cleared by `reset()`.
+    this.damage = { front: 0, rear: 0, left: 0, right: 0 };
+    this.damagePull = 0;          // signed steering pull from asymmetric damage
+    this.lastImpact = 0;          // peak contact severity this step (FX + shake)
+
     this.gLat = 0;
     this.gLong = 0;
     this.gVert = 1;
@@ -484,6 +495,10 @@ export class Vehicle {
     this.rpm = Math.max(cfg.idleRpm, this._gearedRpm());
     this.boost = speed > 20 ? 0.85 : 0;
     this.gLat = 0; this.gLong = 0; this.gVert = 1;
+    // A restage is a new car: pristine bodywork, no pull, no pending impact.
+    this.damage.front = 0; this.damage.rear = 0;
+    this.damage.left = 0; this.damage.right = 0;
+    this.damagePull = 0; this.lastImpact = 0;
     this._shiftTimer = 0;
     this._headingErr = 0;
     this._updateCg();
@@ -496,6 +511,46 @@ export class Vehicle {
 
   /** Assist levels, 0 = off, 1 = maximum intervention. */
   setAssists(a) { Object.assign(this.cfg.assists, a); }
+
+  /**
+   * Record bodywork damage from a contact.
+   *
+   * `severity` is 0..1 (1 = a full-speed nose-in shunt), `zone` is one of
+   * 'front' | 'rear' | 'left' | 'right'. Damage only ever accumulates here;
+   * `repairDamage()` is the single way back. Side damage also banks a small
+   * signed steering pull so a bent track rod can be felt through the wheel.
+   */
+  applyContactDamage(severity, zone = 'right') {
+    const s = clamp(severity, 0, 1);
+    if (!(s > 0)) return this.damageTotal();
+    const d = this.damage;
+    if (zone === 'front') d.front = clamp(d.front + s * 0.55, 0, 1);
+    else if (zone === 'rear') d.rear = clamp(d.rear + s * 0.45, 0, 1);
+    else if (zone === 'left') { d.left = clamp(d.left + s * 0.5, 0, 1); this.damagePull = clamp(this.damagePull - s * 0.35, -1, 1); }
+    else { d.right = clamp(d.right + s * 0.5, 0, 1); this.damagePull = clamp(this.damagePull + s * 0.35, -1, 1); }
+    this.lastImpact = Math.max(this.lastImpact, s);
+    return this.damageTotal();
+  }
+
+  /** Total bodywork damage, 0..1 — the HUD number and the pit-crew trigger. */
+  damageTotal() {
+    const d = this.damage;
+    return clamp((d.front + d.rear + d.left + d.right) * 0.25, 0, 1);
+  }
+
+  /**
+   * Repair bodywork. `amount` 0..1 is the fraction of EACH zone restored
+   * (a pit stop calls this with ~0.85: the crew change the wing, they do not
+   * build a new car). Also recentres the steering pull as bent parts are
+   * replaced.
+   */
+  repairDamage(amount = 1) {
+    const k = clamp(1 - amount, 0, 1);
+    const d = this.damage;
+    d.front *= k; d.rear *= k; d.left *= k; d.right *= k;
+    this.damagePull *= k;
+    return this.damageTotal();
+  }
 
   /** Live setup changes (springs, bars, aero, diff). Re-derives the geometry. */
   setSetup(s) {
@@ -512,7 +567,10 @@ export class Vehicle {
   steerAngle() {
     const cfg = this.cfg;
     const speedFactor = 1 - cfg.steerSpeedFalloff * clamp(this.speed / 85, 0, 1);
-    return this.controls.steer * cfg.maxSteerAngle * speedFactor;
+    // Bent steering from side damage: a constant pull the driver (or the AI)
+    // must hold against. Bounded and speed-tapered like the driver's own input.
+    const pull = (this.damagePull ?? 0) * 0.014 * speedFactor;
+    return this.controls.steer * cfg.maxSteerAngle * speedFactor + pull;
   }
 
   // -- integration -----------------------------------------------------------
@@ -535,6 +593,10 @@ export class Vehicle {
   /** Locate the car on the circuit once per sim step — nearest() is the cost. */
   _beginStep() {
     const c = this.circuit;
+    // Fresh step: the previous step's contact impulse has been consumed by
+    // the engine (particles / shake / audio), so clear it for re-arming by
+    // `_separate()` (car-to-car) or `_endStep()` (barrier) below.
+    this.lastImpact = 0;
     if (!c) { this._slope = 0; this._kerbHere = 0; this._kerbFade = 0; return; }
     const near = c.nearest(this.position, this.trackS);
     this.trackS = near.s;
@@ -808,6 +870,18 @@ export class Vehicle {
     // Induced drag tracks downforce, so a stalled floor is also a slippery one.
     cdA *= 1 + 0.16 * (gf - 1);
 
+    // BODYWORK DAMAGE — a broken wing is lost downforce, a hanging sidepod is
+    // drag. Front damage hurts peak load most (~20% at full), rear damage
+    // costs less load but more drag (diffuser + beam wing), side damage is
+    // almost pure drag. All factors are 1.0 at zero damage, so an undamaged
+    // car is bit-identical to before this model existed.
+    const dmg = this.damage;
+    const dmgAny = dmg.front + dmg.rear + dmg.left + dmg.right;
+    if (dmgAny > 0) {
+      clA *= 1 - 0.20 * dmg.front - 0.12 * dmg.rear - 0.04 * (dmg.left + dmg.right);
+      cdA *= 1 + 0.05 * dmg.front + 0.09 * dmg.rear + 0.07 * (dmg.left + dmg.right);
+    }
+
     const downforce = Math.max(0, q * clA);
     this._downforce = downforce;
     this._drag = q * cdA;
@@ -822,6 +896,9 @@ export class Vehicle {
     if (this._rideFront < cfg.floorStallHeight * 1.6) {
       balance -= 0.06 * clamp((cfg.floorStallHeight * 1.6 - this._rideFront) / cfg.floorStallHeight, 0, 1);
     }
+    // Damage moves the centre of pressure: a broken front wing shifts load
+    // rearward (understeer), a broken diffuser shifts it forward (oversteer).
+    if (dmgAny > 0) balance += -0.045 * dmg.front + 0.035 * dmg.rear;
     balance = clamp(balance, 0.34, 0.56);
     this._aeroBalance = balance;
     this._aeroFront = downforce * balance;
@@ -1315,6 +1392,19 @@ export class Vehicle {
   }
 
   _endStep(dt) {
+    // BARRIER STRIKE — deep beyond the run-off there is nothing but wall.
+    // Grind along it and the bodywork pays, at a rate that scales with speed.
+    // (Gravel and grass slow the car through surface drag already; this is the
+    // bodywork bill on top.) Positive lateral is the car's right, so the wall
+    // on that side takes the right sidepod.
+    const hw = (this._halfWidth ?? this.circuit?.halfWidth ?? 7) + 9;
+    if (Math.abs(this.trackLateral) > hw && this.speed > 15) {
+      const hit = clamp((this.speed - 15) / 60, 0, 1);
+      this.applyContactDamage(hit * 0.5 * dt, this.trackLateral > 0 ? 'right' : 'left');
+      // The per-step damage slice above is intentionally tiny; the IMPACT the
+      // cameras and audio feel is the speed of the strike, held for the step.
+      this.lastImpact = Math.max(this.lastImpact, hit * 0.6);
+    }
     const sm = this.circuit ? this.circuit.sampleAt(this.trackS, _sample) : null;
     this._syncPose(sm, dt);
     this._updateTelemetry();
@@ -1397,6 +1487,9 @@ export class Vehicle {
     t.tcCut = this._tcCut;
     t.absActive = Math.max(this._absRelease[0], this._absRelease[1], this._absRelease[2], this._absRelease[3]);
     t.brakeBias = cfg.brakeBias;
+    t.damage = this.damage;
+    t.damageTotal = this.damageTotal();
+    t.lastImpact = this.lastImpact;
   }
 
   /**
@@ -1437,7 +1530,12 @@ export class Vehicle {
     const muR = cfg.muRear * Math.pow(clamp(rear / cfg.loadRefRear, 0.25, 4), -cfg.loadExponent);
     const mu = (muF * this.frontMassFraction + muR * (1 - this.frontMassFraction))
       * cfg.muBase * cfg.compoundGrip;
-    return (mu * total * 0.97 * cfg.gripEffectiveProfile) / cfg.mass;
+    // A damaged car cannot pull the aero numbers above: scale the AI's model
+    // of the car with the same losses `_aero` applies, or a wingless AI keeps
+    // planning for a grip level it no longer has and lives in the gravel.
+    const d = this.damage ?? { front: 0, rear: 0, left: 0, right: 0 };
+    const dmgCut = 1 - 0.20 * d.front - 0.12 * d.rear - 0.04 * (d.left + d.right);
+    return (mu * total * 0.97 * cfg.gripEffectiveProfile * Math.max(0.55, dmgCut)) / cfg.mass;
   }
 }
 

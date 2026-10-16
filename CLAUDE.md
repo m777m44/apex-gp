@@ -63,6 +63,7 @@ Isolating a pass this way is the fastest route to "why is my frame white".
 | `F` | DRS |
 | `R` | ERS deploy |
 | `C` | cycle camera |
+| `J` | instant replay look-back (press again for live) |
 | `X` | reset to the racing line |
 | `Tab` (hold) | fps / draw calls / triangles / sim & render ms |
 

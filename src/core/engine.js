@@ -49,6 +49,8 @@ export const FIXED_DT = 1 / 60;
 const _camVel = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
 const _tmp = new THREE.Vector3();
+const _contactP = new THREE.Vector3();
+const _contactV = new THREE.Vector3();
 
 /**
  * Camera modes that are bolted to the car. These get onboard-footage treatment
@@ -895,6 +897,7 @@ export class Engine {
       scene: this.scene,
       entries: this.entries,
       playerIndex: 0,
+      events: { onContact: (e) => this._onCarContact(e) },
     });
     this.player = this.field.player;
 
@@ -1111,7 +1114,11 @@ export class Engine {
     this._onResize = () => this.resize();
     window.addEventListener('resize', this._onResize);
 
-    this.input.on('camera', () => { this.rig.cycleMode(); this._camCut = true; });
+    this.input.on('camera', () => {
+      // A camera cut ends the replay and returns to the live broadcast.
+      if (this.rig.replaying) this.rig.stopReplay();
+      this.rig.cycleMode(); this._camCut = true;
+    });
     this.input.on('reset', () => {
       const v = this.player.vehicle;
       v.reset({ s: v.trackS, lateral: this.circuit.racingLineOffset(v.trackS), speed: Math.min(v.speed, 40) });
@@ -1121,6 +1128,15 @@ export class Engine {
       // A reset is a fresh start: hand the gearbox back to the auto box so the
       // driver is never dumped on track holding a gear they forgot they picked.
       this._manualGearbox = false;
+    });
+    // INSTANT REPLAY — J hands the broadcast to the last seconds of the
+    // replay buffer; pressing it again (or changing camera) returns to live.
+    // The sim keeps running underneath, so this is a look-back, never a
+    // rewind: position, fuel and damage are untouched.
+    this.input.on('replay', () => {
+      if (this.rig.replaying) this.rig.stopReplay();
+      else this.rig.startReplay({ offset: 4, rate: 1 });
+      this._camCut = true;
     });
     const kick = () => this.audio.resume();
     window.addEventListener('pointerdown', kick, { once: true });
@@ -1213,7 +1229,21 @@ export class Engine {
     // owner for the physics, one for the decisions.
     applyWakes(this.field.cars, this.circuit);
 
+    this._playerContactFx = false;
     this.field.update(dt);
+    // BARRIER-SCRAPE FEEL — car-to-car contacts already got sparks, shake
+    // and sound through `_onCarContact` (which sets `_playerContactFx`); this
+    // catches the wall grind that `_endStep` priced in damage. Shake is cheap
+    // every step, but the impact sample is throttled so a long grind does not
+    // machine-gun the mixer.
+    const imp = this.player.vehicle.lastImpact;
+    if (imp > 0.05 && !this._playerContactFx) {
+      this.rig.addShake(clamp(imp * 0.8, 0.05, 0.7));
+      if (imp > 0.2 && this.simTime - (this._lastScrapeSfx ?? -9) > 0.35) {
+        this._lastScrapeSfx = this.simTime;
+        this.audio.playImpact(clamp(imp, 0.2, 0.8));
+      }
+    }
     this.session.update(dt);
     this.weather.update(dt, this.field.cars, player.position);
 
@@ -1241,6 +1271,42 @@ export class Engine {
       });
     }
     this._autoDriver.update(dt, this.field.cars.map((c) => c.vehicle));
+  }
+
+  /**
+   * Answer to a hard car-to-car contact from `OpponentField._separate`.
+   * Damage is already booked on both vehicles; this is the sight and sound:
+   * carbon shards + sparks at the contact point, a camera shake, and an
+   * impact sample. Full strength for the player, distance-attenuated for the
+   * field so a shunt three corners away does not shake the broadcast.
+   */
+  _onCarContact(e) {
+    const sev = clamp(e.severity ?? 0.5, 0, 1);
+    const car = this.field.cars[e.a] ?? this.field.cars[0];
+    const v = car?.vehicle;
+    _contactP.set(e.x, e.y ?? 0.5, e.z);
+    if (v) {
+      const sp = Math.max(v.speed, 8);
+      _contactV.set(-Math.sin(v.yaw) * sp, 1.5, -Math.cos(v.yaw) * sp);
+    } else {
+      _contactV.set(0, 1.5, 0);
+    }
+    this.particles.emitContact(_contactP, _contactV, sev);
+
+    const playerInvolved = e.a === 0 || e.b === 0;
+    if (playerInvolved) {
+      this.rig.addShake(0.25 + sev * 0.9);
+      this.audio.playImpact(clamp(sev * 1.2, 0.2, 1));
+      this._playerContactFx = true;
+      return;
+    }
+    const dx = e.x - this.camera.position.x, dz = e.z - this.camera.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const gain = sev * clamp(1 - dist / 80, 0, 1);
+    if (gain > 0.06) {
+      this.rig.addShake(gain * 0.4);
+      if (dist < 40) this.audio.playImpact(clamp(gain, 0.1, 0.7));
+    }
   }
 
   /** Per-render-frame visual updates (interpolation-friendly, no physics). */
@@ -1453,6 +1519,7 @@ export class Engine {
         playerIndex: 0,
         banner: null,
         flag: this.session.flag,
+        replaying: this.rig.replaying,
       });
     }
 

@@ -886,6 +886,28 @@ export class HUD {
       fx -= this._measure('--', { size: 17, weight: 700, font: F_NUM }) + 6;
     }
     this._label('FUEL', fx, barY + barH - 16, { align: 'right', colour: C.faint });
+
+    // ── DAMAGE. Silent while the car is clean; amber when marked, red and
+    // naming the worst zone once it is costing real lap time (heavy blinks,
+    // because a dying wing is the one thing on this bar that needs the eye).
+    const dmgTotal = tel.damageTotal ?? 0;
+    if (dmgTotal > 0.02) {
+      const d = tel.damage ?? {};
+      const zones = [
+        ['FRONT', d.front ?? 0], ['REAR', d.rear ?? 0],
+        ['LEFT', d.left ?? 0], ['RIGHT', d.right ?? 0],
+      ];
+      zones.sort((a, b) => b[1] - a[1]);
+      const heavy = dmgTotal > 0.25;
+      const str = heavy
+        ? `DMG ${zones[0][0]} ${Math.round(dmgTotal * 100)}%`
+        : `DMG ${Math.round(dmgTotal * 100)}%`;
+      const blink = heavy && (this.time % 0.8) < 0.4;
+      this._text(str, (eX + rX + rW) / 2, barY + barH - 16, {
+        size: 15, weight: 700, align: 'center', font: F_NUM,
+        colour: blink ? C.red : heavy ? C.red : C.amber,
+      });
+    }
   }
 
   /**
@@ -1708,6 +1730,31 @@ export class HUD {
       g.addColorStop(1, hexA(col, 0.14));
       c.fillStyle = g;
       c.fillRect(0, 0, this.uw, this.uh);
+    }
+
+    // Instant-replay tag. The sim is still live underneath (J is a look-back,
+    // not a rewind), so the frame says so — a replay with no tag reads as a
+    // frozen game.
+    if (frame.replaying) {
+      const label = 'REPLAY';
+      const tw = this._measure(label, { size: 16, weight: 700, spacing: 1.2 });
+      const pw = tw + 52, ph = 30;
+      const px = (this.uw - pw) / 2, py = L.inset;
+      c.save();
+      this._chip(px, py, pw, ph);
+      c.fillStyle = 'rgba(10,14,20,0.72)';
+      c.fill();
+      c.lineWidth = this._dev(1.5);
+      c.strokeStyle = hexA(C.red, 0.9);
+      c.stroke();
+      c.restore();
+      c.beginPath();
+      c.arc(px + 18, py + ph / 2, 5, 0, Math.PI * 2);
+      c.fillStyle = (this.time % 1.0) < 0.55 ? C.red : hexA(C.red, 0.25);
+      c.fill();
+      this._text(label, px + 30, py + 21, {
+        size: 16, weight: 700, spacing: 1.2, colour: C.text,
+      });
     }
 
     // Retire unused glass panels.

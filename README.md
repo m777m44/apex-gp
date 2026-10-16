@@ -21,8 +21,8 @@ the crowd, the tyre marbles and the engine note are all synthesised at boot from
 a seeded PRNG, so the whole thing runs offline from source.
 
 You race a 20-car field over 24 laps of a 5.66 km circuit, with lap and sector
-timing to the millisecond, DRS zones, ERS deployment, tyre wear and a broadcast
-timing tower.
+timing to the millisecond, DRS zones, ERS deployment, tyre wear, contact damage
+with pit-lane repairs, instant replay (`J`), and a broadcast timing tower.
 
 ![APEX GP — broadcast HUD](docs/img/ship-hud.jpg)
 
@@ -72,6 +72,7 @@ you take over.
 | `F` | DRS (only opens inside a DRS zone, above ~47 km/h, off the brakes) |
 | `R` | ERS deploy |
 | `C` | Cycle camera — chase → cockpit → halo → T-cam → bumper → TV → hero |
+| `J` | Instant replay — look back at the last seconds (press again to go live) |
 | `V` | Look back |
 | `X` | Reset to the racing line |
 | `P` | Pause |
@@ -295,11 +296,13 @@ Ranked by visual impact (full list with evidence in `STATUS.md`):
 6. **Opponent audio is not spatialised** — no PannerNode graph per car.
 7. **Tyre and brake temperature are simulated but barely visible** — no glow, no
    graining or blistering on the tread.
-8. **No damage model, no flashbacks, no replays, no qualifying/practice UI.**
+8. **No flashbacks, no qualifying/practice UI.** Contact damage, pit-lane
+    wing repairs and an instant-replay look-back (`J`) are in; a rewind-style
+    flashback that restores position/fuel/damage is not.
 9. **One circuit, one weather transition set, no track evolution beyond a rubber
    line.**
-10. **1.6 MB single JS chunk**, no code splitting — first load is slower than it
-    needs to be.
+10. **Two JS chunks, not one.** `three` ships as its own long-cacheable vendor
+    chunk (`vite.config.js`, `advancedChunks`); the game chunk holds the rest.
 
 ### Known non-issues
 
